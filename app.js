@@ -1,15 +1,18 @@
-require('dotenv').config()
+/* eslint-disable no-undef */
+/* eslint-disable no-unused-vars */
+require('dotenv').config();
 
-const express = require('express')
 const fetch = require('node-fetch');
-const app = express()
-const path = require('path')
-const port = 3030
+const path = require('path');
+const express = require('express');
+
+const app = express();
+const port = process.env.PORT || 3030;
 
 const Prismic = require('@prismicio/client');
 const PrismicH = require('@prismicio/helpers');
 
-
+// Initialize the prismic.io api
 const initApi = (req) => {
   return Prismic.createClient(process.env.PRISMIC_ENDPOINT, {
     accessToken: process.env.PRISMIC_ACCESS_TOKEN,
@@ -18,150 +21,118 @@ const initApi = (req) => {
   });
 };
 
+// Link Resolver
+const HandleLinkResolver = (doc) => {
+  // Define the url depending on the document type
+  //   if (doc.type === 'page') {
+  //     return '/page/' + doc.uid;
+  //   } else if (doc.type === 'blog_post') {
+  //     return '/blog/' + doc.uid;
+  //   }
 
-const handleLinkResolver = doc => {
-  if (doc.type === 'product') {
-    return `/detail/${doc.uid}`
-  }
+  // Default to homepage
+  return '/';
+};
 
-  if (doc.type === 'collections') {
-    return '/collections'
-  }
-
-  if (doc.type === 'about') {
-    return '/about'
-  }
-
-  return '/'
-}
-
-
+// Middleware to inject prismic context
 app.use((req, res, next) => {
   res.locals.ctx = {
     endpoint: process.env.PRISMIC_ENDPOINT,
-    linkResolver:handleLinkResolver
-  }
+    linkResolver: HandleLinkResolver,
+  };
+  res.locals.PrismicH = PrismicH;
 
-  res.locals.PrismicH = PrismicH
+  next();
+});
 
-  next()
-})
+app.set('view engine', 'pug');
+app.set('views', path.join(__dirname, 'views'));
+app.locals.basedir = app.get('views');
 
-app.set('views', path.join(__dirname, 'views'))
-app.set('view engine', 'pug')
+const handleRequest = async (api) => {
+  const [meta, home, about, { results: collections }] = await Promise.all([
+    api.getSingle('meta'),
+    api.getSingle('home'),
+    api.getSingle('about'),
+    api.query(Prismic.Predicates.at('document.type', 'collection'), {
+      fetchLinks: 'product.image',
+    }),
+  ]);
 
-const handleRequest = async api => {
-  const [meta, preloader, navigation, home, about, { results: collections }] =
-    await Promise.all([
-      api.getSingle('meta'),
-      api.getSingle('preloader'),
-      api.getSingle('navigation'),
-      api.getSingle('home'),
-      api.getSingle('about'),
-      api.query(Prismic.Predicates.at('document.type', 'collection'), {
-        fetchLinks: 'product.image',
-      }),
-    ]);
+  const assets = [];
 
-  const { results: productsData } = await api.query(Prismic.Predicates.at('document.type', 'product'), {
-    fetchLinks: 'collection.title',
-    pageSize: 100
-  })
+  home.data.gallery.forEach((item) => {
+    assets.push(item.image.url);
+  });
 
-  const { data: { list: collectionsOrder } } = await api.getSingle('collection')
+  about.data.gallery.forEach((item) => {
+    assets.push(item.image.url);
+  });
 
-  const collection = collectionsOrder.map(({ collection }) => {
-    const { uid } = collection
-    const data = find(collectionsData, { uid })
-
-    return data
-  })
-
-  const products = []
-
-  collection.forEach(collection => {
-    collection.data.products.forEach(({ products_product: { uid } }) => {
-      products.push(find(productsData, { uid }))
-    })
-  })
-
-  const assets = []
-
-  home.data.gallery.forEach(item => {
-    assets.push(item.image.url)
-  })
-
-  about.data.gallery.forEach(item => {
-    assets.push(item.image.url)
-  })
-
-  about.data.body.forEach(section => {
+  about.data.body.forEach((section) => {
     if (section.slice_type === 'gallery') {
-      section.items.forEach(item => {
-        assets.push(item.image.url)
-      })
+      section.items.forEach((item) => {
+        assets.push(item.image.url);
+      });
     }
-  })
+  });
 
-  collections.forEach(collection => {
-    collection.data.products.forEach(item => {
-      assets.push(item.products_product.data.image.url)
-      assets.push(item.products_product.data.model.url)
-    })
-  })
+  collections.forEach((collection) => {
+    collection.data.products.forEach((item) => {
+      assets.push(item.products_product.data.image.url);
+    });
+  });
 
   return {
-    about,
     assets,
-    collections,
-    home,
     meta,
-    navigation,
-    preloader,
-    products
-  }
-}
+    home,
+    collections,
+    about,
+  };
+};
 
 app.get('/', async (req, res) => {
-  res.render('pages/home')
-})
+  const api = await initApi(req);
+  const defaults = await handleRequest(api);
+
+  res.render('pages/home', {
+    ...defaults,
+  });
+});
 
 app.get('/about', async (req, res) => {
-  initApi(req).then(api => {
-    api.query(
-      Prismic.Predicates.any('document.type', ['about', 'meta'])
-    ).then(response => {
-      const { results } = response
-      const [about, meta] = results
+  const api = await initApi(req);
+  const defaults = await handleRequest(api);
 
-      console.log(about, meta)
+  res.render('pages/about', {
+    ...defaults,
+  });
+});
 
-      res.render('pages/about', {
-        about,
-        meta
-      })
-    })
-  })
-})
+app.get('/collections', async (req, res) => {
+  const api = await initApi(req);
+  const defaults = await handleRequest(api);
+
+  res.render('pages/collections', {
+    ...defaults,
+  });
+});
 
 app.get('/detail/:uid', async (req, res) => {
-  res.render('pages/detail')
-})
+  const api = await initApi(req);
+  const defaults = await handleRequest(api);
 
-app.get('/collection', (req, res) => {
-  res.render('pages/collection')
-})
+  const product = await api.getByUID('product', req.params.uid, {
+    fetchLinks: 'collection.title',
+  });
 
-
-//res.render('index', {
-// meta: {
-//   data: {
-//     title: 'Floema',
-//      description: 'Metadata description.'
-//    }
-//  }
-//})
+  res.render('pages/detail', {
+    ...defaults,
+    product,
+  });
+});
 
 app.listen(port, () => {
-  console.log(`Example app listening at http://localhost:${port}`)
-})
+  console.log(`Example app listening at http://localhost:${port}`);
+});
